@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+   <head>
+      <title>Edit Category</title>
+   </head>
+   <body>
+      <header>
+         <h1>Edit your catalog here.</h1>
+      </header>
+      <div class="editform">
+         <form action="{{url_for('editCatalog',categories_id=catalog.id)}}" method="POST">
+         <h3>Edit</h3>
+         <input type="text" size="30" placeholder="{{catalog.name}}" name="name">
+         <input type="submit" value="edit"><br>
+         <a href="{{url_for('showCatalog')}}">Cancel</a>
+      </div>
+   </body>
+</html>

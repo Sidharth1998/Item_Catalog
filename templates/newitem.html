@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+   <head>
+      <title>New Item</title>
+   </head>
+   <body>
+      <h1>Create a new item</h1>
+      <form action="#" method="POST" id="newitemform">
+         <h3>Name:</h3>
+         <input type="text" size="30" name="name"><br>
+         <h3>Description:</h3>
+         <textarea name="description" form="newitemform" rows="5" cols="60" placeholder="Enter your text here ...."></textarea>
+         <br>
+         <input type="submit" value="create">
+      </form>
+      <a href="{{url_for('showItems',categories_id=categories_id)}}">Cancel</a>
+   </body>
+</html>

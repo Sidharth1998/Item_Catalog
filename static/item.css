@@ -1,0 +1,38 @@
+header {
+    display: flex;
+    flex-flow: row;
+    justify-content: space-between;
+    background-color: navy;
+    padding: 15px;
+}
+body {
+    background-color: black;
+}
+h1 {
+    color: white;
+    margin: 0px;
+    font-size: 50px;
+    font-family: sans-serif;
+}
+.login {
+    padding: 15px;
+    font-size: 30px;
+    background-color: aqua;
+}
+a {
+    text-decoration: none;
+}
+.middle {
+    display: flex;
+    flex-flow: row;
+    padding: 10px;
+    justify-content: center;
+}
+.item {
+    display: flex;
+    flex-flow: row;
+    justify-content: space-around;
+    width: 50%;
+    padding: 5px;
+    background-color: paleturquoise;
+}
