@@ -1,0 +1,361 @@
+from flask import Flask, render_template, request, redirect, jsonify
+from flask import url_for, flash
+
+
+from sqlalchemy import create_engine, asc
+from sqlalchemy.orm import sessionmaker
+from database_setup import Base, User, Categories, Item
+
+from flask import session as login_session
+import random
+import string
+
+from oauth2client.client import flow_from_clientsecrets
+from oauth2client.client import FlowExchangeError
+import httplib2
+import json
+from flask import make_response
+
+
+app = Flask(__name__)
+
+CLIENT_ID = json.loads(open('client_secrets.json', 'r').read())[
+    'web']['client_id']
+APPLICATION_NAME = "Catalog app"
+
+# Connect to Database and create database session
+engine = create_engine('sqlite:///catalogsusers.db')
+Base.metadata.bind = engine
+
+DBSession = sessionmaker(bind=engine)
+session = DBSession()
+
+
+@app.route('/login')
+def showLogin():
+    state = ''.join(random.choice(string.ascii_uppercase + string.digits)
+                    for x in xrange(32))
+    login_session['state'] = state
+    return render_template('login.html', STATE=state)
+
+
+@app.route('/gconnect', methods=['GET', 'POST'])
+def gconnect():
+    if request.args.get('state') != login_session['state']:
+        response = make_response(json.dumps('Invalid state parameter.'), 401)
+        response.headers['Content-Type'] = 'application/json'
+        return response
+    code = request.data
+
+    try:
+        # Upgrade the authorization code into a credentials object
+        oauth_flow = flow_from_clientsecrets('client_secrets.json', scope='')
+        oauth_flow.redirect_uri = 'postmessage'
+        credentials = oauth_flow.step2_exchange(code)
+    except FlowExchangeError:
+        response = make_response(
+            json.dumps('Failed to upgrade the authorization code.'), 401)
+        response.headers['Content-Type'] = 'application/json'
+        return response
+
+    # Check that the access token is valid.
+    access_token = credentials.access_token
+    url = ('https://www.googleapis.com/oauth2/v1/tokeninfo?access_token=%s'
+           % access_token)
+    h = httplib2.Http()
+    result = json.loads(h.request(url, 'GET')[1])
+    # If there was an error in the access token info, abort.
+    if result.get('error') is not None:
+        response = make_response(json.dumps(result.get('error')), 500)
+        response.headers['Content-Type'] = 'application/json'
+        return response
+
+    # Verify that the access token is used for the intended user.
+    gplus_id = credentials.id_token['sub']
+    if result['user_id'] != gplus_id:
+        response = make_response(
+            json.dumps("Token's user ID doesn't match given user ID."), 401)
+        response.headers['Content-Type'] = 'application/json'
+        return response
+
+    # Verify that the access token is valid for this app.
+    if result['issued_to'] != CLIENT_ID:
+        response = make_response(
+            json.dumps("Token's client ID does not match app's."), 401)
+        print("Token's client ID does not match app's.")
+        response.headers['Content-Type'] = 'application/json'
+        return response
+
+    stored_access_token = login_session.get('access_token')
+    stored_gplus_id = login_session.get('gplus_id')
+    if stored_access_token is not None and gplus_id == stored_gplus_id:
+        response = make_response(json.dumps('Current user is '
+                                            'already connected.'), 200)
+        response.headers['Content-Type'] = 'application/json'
+        return response
+
+    # Store the access token in the session for later use.
+    login_session['access_token'] = credentials.access_token
+    login_session['gplus_id'] = gplus_id
+
+    # Get user info
+    userinfo_url = "https://www.googleapis.com/oauth2/v1/userinfo"
+    params = {'access_token': credentials.access_token, 'alt': 'json'}
+    answer = requests.get(userinfo_url, params=params)
+
+    data = answer.json()
+
+    login_session['username'] = data['name']
+    login_session['picture'] = data['picture']
+    login_session['email'] = data['email']
+
+    user_id = getUserID(login_session['email'])
+    if not user_id:
+        user_id = createUser(login_session)
+    login_session['user_id'] = user_id
+
+    output = ''
+    output += '<h1>Welcome, '
+    output += login_session['username']
+    output += '!</h1>'
+    output += '<img src="'
+    output += login_session['picture']
+    output += ' " style = "width: 300px; height: 300px;"'
+    output += ' "border-radius: 150px;" '
+    output += '"-webkit-border-radius: 150px;-moz-border-radius: 150px;"> '
+    flash("you are now logged in as %s" % login_session['username'])
+    print("done!")
+    return output
+
+
+@app.route('/gdisconnect')
+def gdisconnect():
+    access_token = login_session.get('access_token')
+    if access_token is None:
+        print("Access Token is None")
+        response = make_response(json.dumps(
+            'Current user not connected.'), 401)
+        response.headers['Content-Type'] = 'application/json'
+        return response
+    print('In gdisconnect access token is %s'), access_token
+    print('User name is: ')
+    print(login_session['username'])
+    url = ('https://accounts.google.com/o/oauth2/revoke?token=%s'
+           % login_session['access_token'])
+
+    h = httplib2.Http()
+    result = h.request(url, 'GET')[0]
+    print('result is ')
+    print(result)
+    if result['status'] == '200':
+        del login_session['access_token']
+        del login_session['gplus_id']
+        del login_session['username']
+        del login_session['email']
+        del login_session['picture']
+        response = make_response(json.dumps('Successfully disconnected.'),
+                                 200)
+        response.headers['Content-Type'] = 'application/json'
+        return redirect(url_for('showCatalog'))
+    else:
+        response = make_response(json.dumps(
+            'Failed to revoke token for given user.', 400))
+        response.headers['Content-Type'] = 'application/json'
+        return response
+
+
+@app.route('/catalog/JSON')
+def catalogJSON():
+    catalog = session.query(Categories).all()
+    return jsonify(catalog=[i.serialize for i in catalog])
+
+
+@app.route('/catalog/<int:categories_id>/items/JSON')
+def itemsJSON(categories_id):
+    catalog = session.query(Categories).filter_by(id=categories_id).one()
+    items = session.query(Item).filter_by(categories_id=categories_id).all()
+    return jsonify(items=[i.serialize for i in items])
+
+
+@app.route('/')
+@app.route('/catalog')
+def showCatalog():
+    if 'username' not in login_session:
+        catalogs = session.query(Categories).all()
+        items = session.query(Item).all()
+        return render_template('publiccatalog.html', catalogs=catalogs,
+                               items=items)
+    else:
+        catalogs = session.query(Categories).all()
+        items = session.query(Item).all()
+        return render_template('catalog.html', catalogs=catalogs, items=items)
+
+
+@app.route('/catalog/new', methods=['GET', 'POST'])
+def newCatalog():
+    if 'username' not in login_session:
+        return redirect('/login')
+
+    if request.method == 'POST':
+        newcategory = Categories(
+            name=request.form['name'], user_id=login_session['user_id'])
+        session.add(newcategory)
+        session.commit()
+        flash("New catalog was created!")
+        return redirect(url_for('showCatalog'))
+    else:
+        return render_template('newcategory.html')
+
+
+@app.route('/catalog/<int:categories_id>/edit', methods=['GET', 'POST'])
+def editCatalog(categories_id):
+    if 'username' not in login_session:
+        return redirect('/login')
+
+    editcatalog = session.query(Categories).filter_by(id=categories_id).one()
+    if editcatalog.user_id != login_session['user_id']:
+        return "<script>function myFunction() {alert('You are not authorized to edit this catalog.Please create your own catalog in order to edit');}</script><body onload='myFunction()''>"
+    if request.method == 'POST':
+        if request.form['name']:
+            editcatalog.name = request.form['name']
+        session.add(editcatalog)
+        session.commit()
+        flash("The catalog has been edited.")
+        return redirect(url_for('showCatalog'))
+    else:
+        return render_template('editcategory.html', catalog=editcatalog)
+
+
+@app.route('/catalog/<int:categories_id>/delete', methods=['GET', 'POST'])
+def deleteCatalog(categories_id):
+    if 'username' not in login_session:
+        return redirect('/login')
+
+    deletecat = session.query(Categories).filter_by(id=categories_id).one()
+    if deletecat.user_id != login_session['user_id']:
+        return "<script>function myFunction() {alert('You are not authorized to delete this catalog.Please create your own catalog in order to delete');}</script><body onload='myFunction()''>"
+    if request.method == 'POST':
+        session.delete(deletecat)
+        session.commit()
+        flash("The catalog has been deleted")
+        return redirect(url_for('showCatalog'))
+    else:
+        return render_template('deletecategory.html', catalog=deletecat)
+
+
+@app.route('/catalog/<int:categories_id>/items')
+def showItems(categories_id):
+    catalogs = session.query(Categories).all()
+    catalog = session.query(Categories).filter_by(id=categories_id).one()
+    creator = getUserInfo(catalog.user_id)
+    items = session.query(Item).filter_by(categories_id=categories_id).all()
+    if 'username' not in login_session:
+        return render_template('publicitems.html', catalog=catalog,
+                               items=items, catalogs=catalogs,
+                               creator=creator)
+
+    else:
+        return render_template('items.html', items=items, catalog=catalog,
+                               catalogs=catalogs, creator=creator)
+
+
+@app.route('/catalog/<int:categories_id>/<int:items_id>/')
+def desItem(categories_id, items_id):
+    catalogs = session.query(Categories).all()
+    catalog = session.query(Categories).filter_by(id=categories_id).one()
+    items = session.query(Item).filter_by(id=items_id).one()
+    return render_template('itemDes.html', items=items,
+                           categories_id=categories_id,
+                           catalog=catalog, catalogs=catalogs)
+
+
+@app.route('/catalog/<int:categories_id>/items/new', methods=['GET', 'POST'])
+def newItem(categories_id):
+    if 'username' not in login_session:
+        return redirect('/login')
+
+    category = session.query(Categories).filter_by(id=categories_id).one()
+    if category.user_id != login_session['user_id']:
+        return "<script>function myFunction() {alert('You are not authorized to create an item.Please create your own catalog in order to create');}</script><body onload='myFunction()''>"
+    if request.method == 'POST':
+        newitem = Item(name=request.form['name'],
+                       description=request.form['description'],
+                       categories_id=categories_id,
+                       user_id=category.user_id)
+        session.add(newitem)
+        session.commit()
+        flash("The item was created!")
+        return redirect(url_for('showItems', categories_id=categories_id))
+    else:
+        return render_template('newitem.html', categories_id=categories_id)
+
+
+@app.route('/catalog/<int:categories_id>/<int:items_id>/edit',
+           methods=['GET', 'POST'])
+def editItem(categories_id, items_id):
+    if 'username' not in login_session:
+        return redirect('/login')
+
+    catalog = session.query(Categories).filter_by(id=categories_id).one()
+    edititem = session.query(Item).filter_by(id=items_id).one()
+    if catalog.user_id != login_session['user_id']:
+        return "<script>function myFunction() {alert('You are not authorized to edit this item.Please create your own item in order to edit');}</script><body onload='myFunction()''>"
+    if request.method == 'POST':
+        if request.form['name']:
+            edititem.name = request.form['name']
+        if request.form['description']:
+            edititem.description = request.form['description']
+        session.add(edititem)
+        session.commit()
+        flash("The item has been edited")
+        return redirect(url_for('showItems', categories_id=categories_id))
+    else:
+        return render_template('edititem.html', item=edititem,
+                               categories_id=categories_id)
+
+
+@app.route('/catalog/<int:categories_id>/<int:items_id>/delete',
+           methods=['GET', 'POST'])
+def deleteItem(categories_id, items_id):
+    if 'username' not in login_session:
+        return redirect('/login')
+    catalog = session.query(Categories).filter_by(id=categories_id).one()
+    deleteitem = session.query(Item).filter_by(id=items_id).one()
+    if catalog.user_id != login_session['user_id']:
+        return ("<script>function myFunction() {alert('You are not authorized to delete this item.Please create your own item in order to delete');}</script><body onload='myFunction()''>")
+    if request.method == 'POST':
+        session.delete(deleteitem)
+        session.commit()
+        flash("The item has been deleted.")
+        return redirect(url_for('showItems', categories_id=categories_id))
+    else:
+        return render_template('deleteItem.html', item=deleteitem,
+                               categories_id=categories_id)
+
+
+def getUserID(email):
+    try:
+        user = session.query(User).filter_by(email=email).one()
+        return user.id
+    except:
+        return None
+
+
+def getUserInfo(user_id):
+    user = session.query(User).filter_by(id=user_id).one()
+    return user
+
+
+def createUser(login_session):
+    newUser = User(name=login_session['username'], email=login_session[
+                   'email'], picture=login_session['picture'])
+    session.add(newUser)
+    session.commit()
+    user = session.query(User).filter_by(email=login_session['email']).one()
+    return user.id
+
+
+if __name__ == '__main__':
+    app.secret_key = 'super_secret_key'
+    app.debug = True
+    app.run(host='0.0.0.0', port=8000)
