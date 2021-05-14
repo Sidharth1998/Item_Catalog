@@ -1,7 +1,7 @@
 Item Catalog App
 
 Introduction -
-In this project I made a website in which can login with your gmail accounts securely and create,update,read and delete the items. In this project you will have different categories and the items reuired for that particular category is also present. There wil be small description of the items present.
+In this project I made a website in which can login with your gmail accounts securely and create,update,read and delete the items. In this project you will have different categories and the items required for that particular category is also present. There wil be small description of the items present.
 
 To Run -
 I have written this code in python using flask framework.
